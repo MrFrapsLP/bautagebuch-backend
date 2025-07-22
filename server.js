@@ -11,7 +11,7 @@ app.use(express.json());
 
 const db = new sqlite3.Database("./database.db");
 
-// Erstelle User-Tabelle, falls nicht vorhanden
+// Admin-User anlegen
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +20,6 @@ db.serialize(() => {
     role TEXT
   )`);
 
-  // Admin-User anlegen, falls nicht vorhanden
   db.get(`SELECT * FROM users WHERE email = ?`, ["admin@test.de"], (err, row) => {
     if (!row) {
       const hashedPassword = bcrypt.hashSync("admin123", 10);
@@ -30,7 +29,7 @@ db.serialize(() => {
   });
 });
 
-// Login-Route
+// Login
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
 
@@ -46,7 +45,30 @@ app.post("/login", (req, res) => {
   });
 });
 
-// Test-Route
+// Middleware für Auth
+function authenticate(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Kein Token" });
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ message: "Ungültiger Token" });
+    req.user = decoded;
+    next();
+  });
+}
+
+// Dummy-Baustellen
+const demoBaustellen = [
+  { id: 1, name: "Baustelle A", adresse: "Musterstraße 1", kunde: "Kunde A", notizen: "Notiz A" },
+  { id: 2, name: "Baustelle B", adresse: "Beispielweg 2", kunde: "Kunde B", notizen: "Notiz B" }
+];
+
+// Baustellen-Route
+app.get("/baustellen", authenticate, (req, res) => {
+  res.json(demoBaustellen);
+});
+
+// Test
 app.get("/", (req, res) => {
   res.send("Bautagebuch API läuft!");
 });
