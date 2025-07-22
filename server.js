@@ -11,13 +11,20 @@ app.use(express.json());
 
 const db = new sqlite3.Database("./database.db");
 
-// Admin-User anlegen
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE,
     password TEXT,
     role TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS baustellen (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    adresse TEXT,
+    kunde TEXT,
+    notizen TEXT
   )`);
 
   db.get(`SELECT * FROM users WHERE email = ?`, ["admin@test.de"], (err, row) => {
@@ -29,7 +36,6 @@ db.serialize(() => {
   });
 });
 
-// Login
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
 
@@ -45,7 +51,6 @@ app.post("/login", (req, res) => {
   });
 });
 
-// Middleware für Auth
 function authenticate(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Kein Token" });
@@ -57,18 +62,46 @@ function authenticate(req, res, next) {
   });
 }
 
-// Dummy-Baustellen
-const demoBaustellen = [
-  { id: 1, name: "Baustelle A", adresse: "Musterstraße 1", kunde: "Kunde A", notizen: "Notiz A" },
-  { id: 2, name: "Baustelle B", adresse: "Beispielweg 2", kunde: "Kunde B", notizen: "Notiz B" }
-];
-
-// Baustellen-Route
+// GET all
 app.get("/baustellen", authenticate, (req, res) => {
-  res.json(demoBaustellen);
+  db.all(`SELECT * FROM baustellen`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
 });
 
-// Test
+// POST new
+app.post("/baustellen", authenticate, (req, res) => {
+  const { name, adresse, kunde, notizen } = req.body;
+  db.run(`INSERT INTO baustellen (name, adresse, kunde, notizen) VALUES (?, ?, ?, ?)`,
+    [name, adresse, kunde, notizen],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: this.lastID });
+    });
+});
+
+// PUT update
+app.put("/baustellen/:id", authenticate, (req, res) => {
+  const { name, adresse, kunde, notizen } = req.body;
+  db.run(`UPDATE baustellen SET name=?, adresse=?, kunde=?, notizen=? WHERE id=?`,
+    [name, adresse, kunde, notizen, req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ changes: this.changes });
+    });
+});
+
+// DELETE
+app.delete("/baustellen/:id", authenticate, (req, res) => {
+  db.run(`DELETE FROM baustellen WHERE id=?`,
+    [req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ changes: this.changes });
+    });
+});
+
 app.get("/", (req, res) => {
   res.send("Bautagebuch API läuft!");
 });
