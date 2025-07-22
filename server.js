@@ -3,16 +3,19 @@ const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const sqlite3 = require("sqlite3").verbose();
+const multer = require("multer");
 require("dotenv").config();
 
 const app = express();
+const upload = multer({ dest: "./uploads" });
+
 app.use(cors());
 app.use(express.json());
 
 const db = new sqlite3.Database("./database.db");
 
+// Tabellen erstellen
 db.serialize(() => {
-  // Tabelle Users
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE,
@@ -20,28 +23,43 @@ db.serialize(() => {
     role TEXT
   )`);
 
-  // Tabelle Baustellen
+  db.run(`CREATE TABLE IF NOT EXISTS stockwerke (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baustelle_id INTEGER,
+    name TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS tueren (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stockwerk_id INTEGER,
+    name TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS maengel (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tuer_id INTEGER,
+    titel TEXT,
+    beschreibung TEXT,
+    behoben INTEGER,
+    timestamp TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS grundrisse (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stockwerk_id INTEGER,
+    dateiname TEXT,
+    pfad TEXT
+  )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS baustellen (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
     adresse TEXT,
     kunde TEXT,
-    notizen TEXT
+    notizen TEXT,
+    status TEXT
   )`);
 
-  // Tabelle Mängel (defects)
-  db.run(`CREATE TABLE IF NOT EXISTS defects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    site_id INTEGER,
-    description TEXT NOT NULL,
-    status TEXT DEFAULT 'offen',
-    photo_url TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    resolved_at DATETIME,
-    FOREIGN KEY (site_id) REFERENCES baustellen(id)
-  )`);
-
-  // Admin-User automatisch anlegen
   db.get(`SELECT * FROM users WHERE email = ?`, ["admin@test.de"], (err, row) => {
     if (!row) {
       const hashedPassword = bcrypt.hashSync("admin123", 10);
@@ -50,6 +68,18 @@ db.serialize(() => {
     }
   });
 });
+
+// Auth
+function authenticate(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Kein Token" });
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ message: "Ungültiger Token" });
+    req.user = decoded;
+    next();
+  });
+}
 
 // Login
 app.post("/login", (req, res) => {
@@ -67,21 +97,9 @@ app.post("/login", (req, res) => {
   });
 });
 
-// Middleware
-function authenticate(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Kein Token" });
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: "Ungültiger Token" });
-    req.user = decoded;
-    next();
-  });
-}
-
-// CRUD Baustellen
+// Baustellen CRUD
 app.get("/baustellen", authenticate, (req, res) => {
-  db.all(`SELECT * FROM baustellen`, [], (err, rows) => {
+  db.all("SELECT * FROM baustellen", (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
   });
@@ -89,76 +107,90 @@ app.get("/baustellen", authenticate, (req, res) => {
 
 app.post("/baustellen", authenticate, (req, res) => {
   const { name, adresse, kunde, notizen } = req.body;
-  db.run(`INSERT INTO baustellen (name, adresse, kunde, notizen) VALUES (?, ?, ?, ?)`,
-    [name, adresse, kunde, notizen],
-    function (err) {
+  db.run("INSERT INTO baustellen (name, adresse, kunde, notizen, status) VALUES (?, ?, ?, ?, 'aktiv')",
+    [name, adresse, kunde, notizen], function (err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ id: this.lastID });
     });
 });
 
 app.put("/baustellen/:id", authenticate, (req, res) => {
-  const { name, adresse, kunde, notizen } = req.body;
-  db.run(`UPDATE baustellen SET name=?, adresse=?, kunde=?, notizen=? WHERE id=?`,
-    [name, adresse, kunde, notizen, req.params.id],
-    function (err) {
+  const { name, adresse, kunde, notizen, status } = req.body;
+  db.run("UPDATE baustellen SET name=?, adresse=?, kunde=?, notizen=?, status=? WHERE id=?",
+    [name, adresse, kunde, notizen, status || 'aktiv', req.params.id], function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ changes: this.changes });
+      res.json({ updated: this.changes });
     });
 });
 
 app.delete("/baustellen/:id", authenticate, (req, res) => {
-  db.run(`DELETE FROM baustellen WHERE id=?`,
-    [req.params.id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ changes: this.changes });
-    });
+  db.run("DELETE FROM baustellen WHERE id=?", [req.params.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
 });
 
-// 📄 API für Mängel
-app.get("/baustellen/:siteId/defects", authenticate, (req, res) => {
-  db.all(`SELECT * FROM defects WHERE site_id = ?`, [req.params.siteId], (err, rows) => {
+// Stockwerke
+app.get("/baustellen/:id/stockwerke", authenticate, (req, res) => {
+  db.all("SELECT * FROM stockwerke WHERE baustelle_id=?", [req.params.id], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
   });
 });
 
-app.post("/baustellen/:siteId/defects", authenticate, (req, res) => {
-  const { description } = req.body;
-  db.run(
-    `INSERT INTO defects (site_id, description) VALUES (?, ?)`,
-    [req.params.siteId, description],
-    function (err) {
+app.post("/baustellen/:id/stockwerke", authenticate, (req, res) => {
+  const { name } = req.body;
+  db.run("INSERT INTO stockwerke (baustelle_id, name) VALUES (?, ?)",
+    [req.params.id, name], function (err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ id: this.lastID });
-    }
-  );
+    });
 });
 
-app.patch("/defects/:id", authenticate, (req, res) => {
-  const { status } = req.body;
-  const resolvedAt = status === "behoben" ? new Date().toISOString() : null;
-
-  db.run(
-    `UPDATE defects SET status = ?, resolved_at = ? WHERE id = ?`,
-    [status, resolvedAt, req.params.id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    }
-  );
+// Türen
+app.get("/stockwerke/:id/tueren", authenticate, (req, res) => {
+  db.all("SELECT * FROM tueren WHERE stockwerk_id=?", [req.params.id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
 });
 
-app.delete("/defects/:id", authenticate, (req, res) => {
-  db.run(
-    `DELETE FROM defects WHERE id = ?`,
-    [req.params.id],
-    function (err) {
+app.post("/stockwerke/:id/tueren", authenticate, (req, res) => {
+  const { name } = req.body;
+  db.run("INSERT INTO tueren (stockwerk_id, name) VALUES (?, ?)",
+    [req.params.id, name], function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ deleted: this.changes });
-    }
-  );
+      res.json({ id: this.lastID });
+    });
+});
+
+// Mängel
+app.get("/tueren/:id/maengel", authenticate, (req, res) => {
+  db.all("SELECT * FROM maengel WHERE tuer_id=?", [req.params.id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+app.post("/tueren/:id/maengel", authenticate, (req, res) => {
+  const { titel, beschreibung, behoben } = req.body;
+  const timestamp = new Date().toISOString();
+  db.run("INSERT INTO maengel (tuer_id, titel, beschreibung, behoben, timestamp) VALUES (?, ?, ?, ?, ?)",
+    [req.params.id, titel, beschreibung, behoben ? 1 : 0, timestamp], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: this.lastID });
+    });
+});
+
+// Grundrisse
+app.post("/stockwerke/:id/grundriss", authenticate, upload.single("file"), (req, res) => {
+  const pfad = req.file.path;
+  const dateiname = req.file.originalname;
+  db.run("INSERT INTO grundrisse (stockwerk_id, dateiname, pfad) VALUES (?, ?, ?)",
+    [req.params.id, dateiname, pfad], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: this.lastID, pfad });
+    });
 });
 
 app.get("/", (req, res) => {
