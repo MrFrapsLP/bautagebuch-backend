@@ -12,6 +12,7 @@ app.use(express.json());
 const db = new sqlite3.Database("./database.db");
 
 db.serialize(() => {
+  // Tabelle Users
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE,
@@ -19,6 +20,7 @@ db.serialize(() => {
     role TEXT
   )`);
 
+  // Tabelle Baustellen
   db.run(`CREATE TABLE IF NOT EXISTS baustellen (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
@@ -27,6 +29,19 @@ db.serialize(() => {
     notizen TEXT
   )`);
 
+  // Tabelle Mängel (defects)
+  db.run(`CREATE TABLE IF NOT EXISTS defects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER,
+    description TEXT NOT NULL,
+    status TEXT DEFAULT 'offen',
+    photo_url TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME,
+    FOREIGN KEY (site_id) REFERENCES baustellen(id)
+  )`);
+
+  // Admin-User automatisch anlegen
   db.get(`SELECT * FROM users WHERE email = ?`, ["admin@test.de"], (err, row) => {
     if (!row) {
       const hashedPassword = bcrypt.hashSync("admin123", 10);
@@ -36,6 +51,7 @@ db.serialize(() => {
   });
 });
 
+// Login
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
 
@@ -51,6 +67,7 @@ app.post("/login", (req, res) => {
   });
 });
 
+// Middleware
 function authenticate(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Kein Token" });
@@ -62,7 +79,7 @@ function authenticate(req, res, next) {
   });
 }
 
-// GET all
+// CRUD Baustellen
 app.get("/baustellen", authenticate, (req, res) => {
   db.all(`SELECT * FROM baustellen`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -70,7 +87,6 @@ app.get("/baustellen", authenticate, (req, res) => {
   });
 });
 
-// POST new
 app.post("/baustellen", authenticate, (req, res) => {
   const { name, adresse, kunde, notizen } = req.body;
   db.run(`INSERT INTO baustellen (name, adresse, kunde, notizen) VALUES (?, ?, ?, ?)`,
@@ -81,7 +97,6 @@ app.post("/baustellen", authenticate, (req, res) => {
     });
 });
 
-// PUT update
 app.put("/baustellen/:id", authenticate, (req, res) => {
   const { name, adresse, kunde, notizen } = req.body;
   db.run(`UPDATE baustellen SET name=?, adresse=?, kunde=?, notizen=? WHERE id=?`,
@@ -92,7 +107,6 @@ app.put("/baustellen/:id", authenticate, (req, res) => {
     });
 });
 
-// DELETE
 app.delete("/baustellen/:id", authenticate, (req, res) => {
   db.run(`DELETE FROM baustellen WHERE id=?`,
     [req.params.id],
@@ -100,6 +114,51 @@ app.delete("/baustellen/:id", authenticate, (req, res) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ changes: this.changes });
     });
+});
+
+// 📄 API für Mängel
+app.get("/baustellen/:siteId/defects", authenticate, (req, res) => {
+  db.all(`SELECT * FROM defects WHERE site_id = ?`, [req.params.siteId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+app.post("/baustellen/:siteId/defects", authenticate, (req, res) => {
+  const { description } = req.body;
+  db.run(
+    `INSERT INTO defects (site_id, description) VALUES (?, ?)`,
+    [req.params.siteId, description],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: this.lastID });
+    }
+  );
+});
+
+app.patch("/defects/:id", authenticate, (req, res) => {
+  const { status } = req.body;
+  const resolvedAt = status === "behoben" ? new Date().toISOString() : null;
+
+  db.run(
+    `UPDATE defects SET status = ?, resolved_at = ? WHERE id = ?`,
+    [status, resolvedAt, req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ updated: this.changes });
+    }
+  );
+});
+
+app.delete("/defects/:id", authenticate, (req, res) => {
+  db.run(
+    `DELETE FROM defects WHERE id = ?`,
+    [req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ deleted: this.changes });
+    }
+  );
 });
 
 app.get("/", (req, res) => {
